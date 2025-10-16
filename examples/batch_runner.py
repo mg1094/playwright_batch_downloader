@@ -517,12 +517,15 @@ async def main():
     parser.add_argument(
         '--openai-key',
         help='OpenAI API密钥（启用文档校验功能）',
-        default='sk-or-v1-'
+        # default='sk-or-v1-'
+        default='sk-'
+
     )
     parser.add_argument(
         '--openai-base-url',
         help='OpenAI API基础URL（可选，用于代理服务）',
-        default='https://openrouter.ai/api/v1'
+        # default='https://openrouter.ai/api/v1'
+        default='https://dashscope.aliyuncs.com/compatible-mode/v1'
     )
     
     args = parser.parse_args()

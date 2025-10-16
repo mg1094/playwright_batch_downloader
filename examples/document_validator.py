@@ -142,7 +142,7 @@ class DocumentValidator:
                 import subprocess
                 try:
                     subprocess.run([
-                        'libreoffice', '--headless', '--convert-to', 'pdf', 
+                        'soffice', '--headless', '--convert-to', 'pdf', 
                         '--outdir', output_dir, file_path
                     ], check=True, capture_output=True)
                     
@@ -346,13 +346,8 @@ class DocumentValidator:
         """
         校验两个文档（空白表格和示例样表）
         """
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"""你是一位专业的政务材料审查员。请仔细分析下面两张文档图片，进行全面校验。
+        prompt = f"""
+你是一位专业的政务材料审查员。请仔细分析下面两张文档图片，进行全面校验。
 
 # 输入信息
 - 材料名称: "{material_name}"
@@ -362,11 +357,11 @@ class DocumentValidator:
 # 校验任务
 请对以下6个方面进行校验，并给出明确的true/false判断：
 
-1. `forms_consistent`: 两个表格的结构、布局、字段标签、样式是否完全一致？（忽略填写内容的差异）
-2. `blank_form_matches`: 空白表格的标题或主要内容是否与材料名称"{material_name}"相符？
-3. `sample_form_matches`: 示例样表的标题或主要内容是否与材料名称"{material_name}"相符？
-4. `blank_form_empty`: 空白表格中是否没有填写示例内容？（可以有提示文字）
-5. `sample_form_filled`: 示例样表中是否包含已填写的示例内容？
+1. `consistency`: 空白表格和示例样表在整体布局、结构、表格项目和样式上是否基本一致？它们看起来应该是同一个模板的两种状态（一个未填写，一个已填写）。
+2. `blank_form_matches`: 请宽松判断：空白表格的主旨是否与材料名称“{material_name}”的核心主题紧密相关？例如，如果材料名称是“体检合格证明”，表格标题是“教师资格申请人员体检表”也应视为相符，因为它们都围绕“体检”这一核心主题。（判断标准：主题相关即可，无需文字完全匹配）
+3. `sample_form_matches`: 请宽松判断：示例样表的主旨是否与材料名称“{material_name}”的核心主题紧密相关？例如，如果材料名称是“体检合格证明”，表格标题是“教师资格申请人员体检表”也应视为相符，因为它们都围绕“体检”这一核心主题。（判断标准：主题相关即可，无需文字完全匹配）
+4. `blank_form_has_no_samples`: 空白表格中是否不包含任何个人信息填写示例？表格应该是干净的、待填写的状态。
+5. `sample_form_has_samples`: 示例样表中是否清晰地包含了填写示例？
 6. `sample_info_masked`: 示例样表中的个人信息（姓名、电话、地址等）是否已经打码处理？（如"张xx"、"139xxxx"等）
 
 # 输出格式 (严格JSON格式)
@@ -384,6 +379,14 @@ class DocumentValidator:
   "sample_info_masked": true,
   "sample_info_masked_reason": "详细说明判断理由"
 }}"""
+        
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": prompt
                     },
                     {
                         "type": "image_url",
@@ -405,7 +408,7 @@ class DocumentValidator:
         
         try:
             response = await self.client.chat.completions.create(
-                model="gpt-4o",  # 使用支持视觉的模型
+                model="qwen-vl-max-latest",  # 使用支持视觉的模型
                 messages=messages,
                 max_tokens=1000,
                 temperature=0.1
@@ -435,31 +438,37 @@ class DocumentValidator:
         """
         校验单个空白表格文档
         """
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"""你是一位专业的政务材料审查员。请仔细分析下面的空白表格文档图片。
-
-# 输入信息
-- 材料名称: "{material_name}"
-- 文档类型: 空白表格
-
-# 校验任务
-请对以下方面进行校验：
-
-1. `blank_form_matches`: 空白表格的标题或主要内容是否与材料名称"{material_name}"相符？
-2. `blank_form_empty`: 空白表格中是否没有填写示例内容？（可以有提示文字）
-
-# 输出格式 (严格JSON格式)
+        prompt = f"""
+        你是一位专业的政务材料审查员。请仔细分析下面的文档图片，进行全面校验。
+        
+        # 输入信息
+        - 材料名称: "{material_name}"
+        - 文档类型: 空白表格
+        
+        # 校验图片
+        <image>
+        
+        # 校验要求
+        请对以下3个方面进行校验，并给出明确的true/false判断：
+        
+        1. `blank_form_matches`: 请宽松判断：空白表格的主旨是否与材料名称“{material_name}”的核心主题紧密相关？例如，如果材料名称是“体检合格证明”，表格标题是“教师资格申请人员体检表”也应视为相符，因为它们都围绕“体检”这一核心主题。（判断标准：主题相关即可，无需文字完全匹配）
+        2. `blank_form_has_no_samples`: 空白表格中是否不包含任何个人信息填写示例？表格应该是干净的、待填写的状态。
+        
+        # 输出格式
 {{
   "blank_form_matches": true,
   "blank_form_matches_reason": "详细说明判断理由",
   "blank_form_empty": true,
   "blank_form_empty_reason": "详细说明判断理由"
 }}"""
+        
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": prompt
                     },
                     {
                         "type": "image_url",
@@ -474,7 +483,7 @@ class DocumentValidator:
         
         try:
             response = await self.client.chat.completions.create(
-                model="gpt-4o",
+                model="qwen-vl-max-latest",
                 messages=messages,
                 max_tokens=500,
                 temperature=0.1
@@ -498,26 +507,24 @@ class DocumentValidator:
         """
         校验单个示例样表文档
         """
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"""你是一位专业的政务材料审查员。请仔细分析下面的示例样表文档图片。
-
-# 输入信息
-- 材料名称: "{material_name}"
-- 文档类型: 示例样表
-
-# 校验任务
-请对以下方面进行校验：
-
-1. `sample_form_matches`: 示例样表的标题或主要内容是否与材料名称"{material_name}"相符？
-2. `sample_form_filled`: 示例样表中是否包含已填写的示例内容？
-3. `sample_info_masked`: 示例样表中的个人信息（姓名、电话、地址等）是否已经打码处理？（如"张xx"、"139xxxx"等）
-
-# 输出格式 (严格JSON格式)
+        prompt = f"""
+        你是一位专业的政务材料审查员。请仔细分析下面的文档图片，进行全面校验。
+        
+        # 输入信息
+        - 材料名称: "{material_name}"
+        - 文档类型: 示例样表
+        
+        # 校验图片
+        <image>
+        
+        # 校验要求
+        请对以下3个方面进行校验，并给出明确的true/false判断：
+        
+        1. `sample_form_matches`: 请宽松判断：示例样表的主旨是否与材料名称“{material_name}”的核心主题紧密相关？例如，如果材料名称是“体检合格证明”，表格标题是“教师资格申请人员体检表”也应视为相符，因为它们都围绕“体检”这一核心主题。（判断标准：主题相关即可，无需文字完全匹配）
+        2. `sample_form_has_samples`: 示例样表中是否清晰地包含了填写示例？
+        3. `sample_info_masked`: 示例样表中的个人信息（姓名、电话、地址等）是否已经打码处理？（如"张xx"、"139xxxx"等）
+        
+        # 输出格式
 {{
   "sample_form_matches": true,
   "sample_form_matches_reason": "详细说明判断理由",
@@ -526,6 +533,14 @@ class DocumentValidator:
   "sample_info_masked": true,
   "sample_info_masked_reason": "详细说明判断理由"
 }}"""
+        
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": prompt
                     },
                     {
                         "type": "image_url",
@@ -540,7 +555,7 @@ class DocumentValidator:
         
         try:
             response = await self.client.chat.completions.create(
-                model="gpt-4o",
+                model="qwen-vl-max-latest",
                 messages=messages,
                 max_tokens=500,
                 temperature=0.1
