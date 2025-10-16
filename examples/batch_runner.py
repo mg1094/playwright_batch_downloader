@@ -38,9 +38,15 @@ class BatchTestRunner:
         if openai_api_key:
             try:
                 self.document_validator = DocumentValidator(openai_api_key, openai_base_url)
-                print("✅ 文档校验器已启用")
+                # 检查客户端是否初始化成功
+                if self.document_validator.client:
+                    print("✅ 文档校验器已启用")
+                else:
+                    print("⚠️ 文档校验器初始化失败，将禁用校验功能")
+                    self.document_validator = None
             except Exception as e:
-                print(f"⚠️ 文档校验器初始化失败: {e}")
+                print(f"⚠️ 文档校验器初始化出错: {e}")
+                self.document_validator = None
         else:
             print("⚠️ 未提供OpenAI API密钥，文档校验功能将被禁用")
         
@@ -463,9 +469,15 @@ class BatchTestRunner:
                 print(f"\n{'='*60}")
                 print("📋 开始执行文档校验...")
                 
-                await self._perform_document_validation(df, download_files)
+                try:
+                    await self._perform_document_validation(df, download_files)
+                finally:
+                    # 确保正确关闭文档校验器
+                    if self.document_validator:
+                        await self.document_validator.close()
+                        print("✅ 文档校验器已关闭")
                     
-            # --- 4. 保存结果 ---
+            # --- 5. 保存结果 ---
             print(f"\n{'='*60}")
             print(f"📊 测试完成!")
             print(f"   总计: {total_count} 条")
@@ -502,8 +514,16 @@ async def main():
     parser = argparse.ArgumentParser(description='批量测试下载链接功能')
     parser.add_argument('input_file', nargs='?', default='sample_test_data.xlsx', help='输入的Excel文件路径（默认: sample_test_data.xlsx）')
     parser.add_argument('-o', '--output', help='输出的Excel文件路径（可选）')
-    parser.add_argument('--openai-key', help='OpenAI API密钥（启用文档校验功能）')
-    parser.add_argument('--openai-base-url', help='OpenAI API基础URL（可选，用于代理服务）')
+    parser.add_argument(
+        '--openai-key',
+        help='OpenAI API密钥（启用文档校验功能）',
+        default='sk-or-v1-'
+    )
+    parser.add_argument(
+        '--openai-base-url',
+        help='OpenAI API基础URL（可选，用于代理服务）',
+        default='https://openrouter.ai/api/v1'
+    )
     
     args = parser.parse_args()
     

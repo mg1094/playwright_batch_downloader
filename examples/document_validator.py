@@ -22,6 +22,9 @@ from pathlib import Path
 import fitz  # PyMuPDF
 from PIL import Image
 from openai import AsyncOpenAI
+from PIL import ImageDraw, ImageFont
+# 这个是 python-docx 包引入的
+from docx import Document
 
 
 @dataclass
@@ -54,10 +57,41 @@ class DocumentValidator:
             openai_api_key: OpenAI API密钥
             openai_base_url: OpenAI API基础URL（可选，用于使用代理或第三方服务）
         """
-        self.client = AsyncOpenAI(
-            api_key=openai_api_key,
-            base_url=openai_base_url
-        )
+        try:
+            # 构建客户端初始化参数
+            client_kwargs = {
+                "api_key": openai_api_key,
+            }
+            
+            # 只有在提供了base_url时才添加
+            if openai_base_url:
+                client_kwargs["base_url"] = openai_base_url
+            
+            # 为了兼容OpenRouter等第三方服务，添加超时配置
+            client_kwargs["timeout"] = 60.0
+            
+            # 初始化AsyncOpenAI客户端
+            self.client = AsyncOpenAI(**client_kwargs)
+            
+            # 测试连接可用性
+            print(f"✅ OpenAI客户端初始化成功，API端点: {openai_base_url or 'https://api.openai.com'}")
+            
+        except Exception as e:
+            print(f"❌ OpenAI客户端初始化失败: {e}")
+            print(f"   API密钥: {'已设置' if openai_api_key else '未设置'}")
+            print(f"   API端点: {openai_base_url or 'https://api.openai.com'}")
+            # 不抛出异常，而是设置client为None，让系统继续运行但跳过校验
+            self.client = None
+    
+    async def close(self):
+        """
+        关闭OpenAI客户端，释放资源
+        """
+        try:
+            if hasattr(self, 'client') and self.client:
+                await self.client.close()
+        except Exception as e:
+            print(f"⚠️ 关闭OpenAI客户端时出错: {e}")
         
     def convert_document_to_image(self, file_path: str, output_dir: str = "temp_images") -> str:
         """
@@ -156,7 +190,7 @@ class DocumentValidator:
             PIL.Image: 生成的图片
         """
         try:
-            from docx import Document
+            
             
             # 读取DOCX内容
             doc = Document(docx_path)
@@ -180,7 +214,7 @@ class DocumentValidator:
                         text_lines.append(" | ".join(row_text))
             
             # 创建简单的文本图片
-            from PIL import ImageDraw, ImageFont
+            
             
             # 图片设置
             width, height = 800, max(600, len(text_lines) * 30 + 100)
@@ -244,6 +278,17 @@ class DocumentValidator:
         """
         result = ValidationResult()
         
+        # 检查OpenAI客户端是否可用
+        if not self.client:
+            error_msg = "OpenAI客户端不可用，无法进行文档校验"
+            result.forms_consistent_reason = error_msg
+            result.blank_form_matches_reason = error_msg
+            result.sample_form_matches_reason = error_msg
+            result.blank_form_empty_reason = error_msg
+            result.sample_form_filled_reason = error_msg
+            result.sample_info_masked_reason = error_msg
+            return result
+        
         try:
             # 准备图片
             images = {}
@@ -269,15 +314,15 @@ class DocumentValidator:
                 await self._validate_sample_document(result, material_name, images['sample'])
             
             # 清理临时图片文件
-            if 'blank' in images:
-                temp_blank_path = blank_img_path
-                if os.path.exists(temp_blank_path):
-                    os.remove(temp_blank_path)
+            # if 'blank' in images:
+            #     temp_blank_path = blank_img_path
+            #     if os.path.exists(temp_blank_path):
+            #         os.remove(temp_blank_path)
                     
-            if 'sample' in images:
-                temp_sample_path = sample_img_path
-                if os.path.exists(temp_sample_path):
-                    os.remove(temp_sample_path)
+            # if 'sample' in images:
+            #     temp_sample_path = sample_img_path
+            #     if os.path.exists(temp_sample_path):
+            #         os.remove(temp_sample_path)
             
         except Exception as e:
             print(f"❌ 文档校验出错: {e}")
@@ -368,6 +413,7 @@ class DocumentValidator:
             
             # 解析响应
             content = response.choices[0].message.content
+            print("ai调用成功，开始解析响应")
             await self._parse_validation_response(result, content)
             
         except Exception as e:
