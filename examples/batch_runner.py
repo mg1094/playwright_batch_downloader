@@ -21,16 +21,28 @@ from datetime import datetime
 from pathlib import Path
 from playwright.async_api import async_playwright, expect
 import argparse
+from document_validator import DocumentValidator, ValidationResult
 
 class BatchTestRunner:
     """批量测试运行器"""
     
-    def __init__(self, input_file: str, output_file: str = None):
+    def __init__(self, input_file: str, output_file: str = None, openai_api_key: str = None, openai_base_url: str = None):
         self.input_file = input_file
         self.output_file = output_file or self._generate_output_filename()
         self.download_dir = "downloads"
         self.screenshots_dir = "screenshots"
         self._ensure_directories()
+        
+        # 初始化文档校验器
+        self.document_validator = None
+        if openai_api_key:
+            try:
+                self.document_validator = DocumentValidator(openai_api_key, openai_base_url)
+                print("✅ 文档校验器已启用")
+            except Exception as e:
+                print(f"⚠️ 文档校验器初始化失败: {e}")
+        else:
+            print("⚠️ 未提供OpenAI API密钥，文档校验功能将被禁用")
         
     def _generate_output_filename(self) -> str:
         """生成带时间戳的输出文件名"""
@@ -54,10 +66,10 @@ class BatchTestRunner:
             element_name: 元素名称（下载链接文本）
             
         Returns:
-            tuple: (status, message, details, file_type)
+            tuple: (status, message, file_path, file_type)
                 status: "成功" | "失败"  
                 message: 详细描述信息
-                details: 额外的详细信息（如文件路径等）
+                file_path: 下载的文件路径（失败时为空字符串）
                 file_type: 文件类型（如"pdf", "doc", "docx"等，失败时为空字符串）
         """
         start_time = datetime.now()
@@ -251,6 +263,101 @@ class BatchTestRunner:
                 
             return ("失败", error_msg, "", "")
     
+    async def _perform_document_validation(self, df: pd.DataFrame, download_files: dict):
+        """
+        执行文档校验
+        
+        Args:
+            df: 数据框，用于更新校验结果
+            download_files: 下载文件信息字典
+        """
+        for material_name, files in download_files.items():
+            print(f"\n🔍 校验材料: {material_name}")
+            
+            blank_form_path = files.get('空白表格')
+            sample_form_path = files.get('示例样表')
+            
+            if blank_form_path or sample_form_path:
+                try:
+                    # 执行文档校验
+                    validation_result = await self.document_validator.validate_documents(
+                        material_name, blank_form_path, sample_form_path
+                    )
+                    
+                    # 更新DataFrame中对应的行
+                    self._update_validation_results(df, material_name, validation_result)
+                    
+                    print(f"✅ 材料'{material_name}'校验完成")
+                    
+                except Exception as e:
+                    print(f"❌ 材料'{material_name}'校验失败: {e}")
+                    # 将错误信息写入结果
+                    self._update_validation_error(df, material_name, str(e))
+    
+    def _update_validation_results(self, df: pd.DataFrame, material_name: str, result: ValidationResult):
+        """
+        更新校验结果到DataFrame
+        
+        Args:
+            df: 数据框
+            material_name: 材料名称
+            result: 校验结果
+        """
+        # 找到对应材料名称的所有行
+        material_rows = df[df['材料名称'] == material_name]
+        
+        for index in material_rows.index:
+            element_name = df.at[index, '元素名称']
+            
+            # 根据元素类型更新相应的校验结果
+            if element_name in ['空白表格', '示例样表']:
+                # 更新所有校验列
+                df.at[index, '两表格内容样式是否一致'] = self._format_validation_result(result.forms_consistent, result.forms_consistent_reason)
+                df.at[index, '材料名称和空白表格主旨是否相符'] = self._format_validation_result(result.blank_form_matches, result.blank_form_matches_reason)
+                df.at[index, '材料名称和示例样表主旨是否相符'] = self._format_validation_result(result.sample_form_matches, result.sample_form_matches_reason)
+                df.at[index, '空白表格无示例'] = self._format_validation_result(result.blank_form_empty, result.blank_form_empty_reason)
+                df.at[index, '示例样表包含填写示例'] = self._format_validation_result(result.sample_form_filled, result.sample_form_filled_reason)
+                df.at[index, '示例样表信息是否打码'] = self._format_validation_result(result.sample_info_masked, result.sample_info_masked_reason)
+    
+    def _update_validation_error(self, df: pd.DataFrame, material_name: str, error_msg: str):
+        """
+        更新校验错误到DataFrame
+        
+        Args:
+            df: 数据框
+            material_name: 材料名称
+            error_msg: 错误信息
+        """
+        material_rows = df[df['材料名称'] == material_name]
+        
+        for index in material_rows.index:
+            element_name = df.at[index, '元素名称']
+            if element_name in ['空白表格', '示例样表']:
+                df.at[index, '两表格内容样式是否一致'] = f"校验出错: {error_msg}"
+                df.at[index, '材料名称和空白表格主旨是否相符'] = f"校验出错: {error_msg}"
+                df.at[index, '材料名称和示例样表主旨是否相符'] = f"校验出错: {error_msg}"
+                df.at[index, '空白表格无示例'] = f"校验出错: {error_msg}"
+                df.at[index, '示例样表包含填写示例'] = f"校验出错: {error_msg}"
+                df.at[index, '示例样表信息是否打码'] = f"校验出错: {error_msg}"
+    
+    def _format_validation_result(self, result: bool, reason: str) -> str:
+        """
+        格式化校验结果
+        
+        Args:
+            result: 校验结果 (True/False/None)
+            reason: 详细原因
+            
+        Returns:
+            str: 格式化的结果字符串
+        """
+        if result is None:
+            return "未校验"
+        elif result:
+            return f"通过: {reason}" if reason else "通过"
+        else:
+            return f"未通过: {reason}" if reason else "未通过"
+    
     async def run_batch_tests(self):
         """执行批量测试"""
         
@@ -276,6 +383,14 @@ class BatchTestRunner:
         df['执行结果'] = ""
         df['文件格式'] = ""
         
+        # 添加文档校验列
+        df['两表格内容样式是否一致'] = ""
+        df['材料名称和空白表格主旨是否相符'] = ""
+        df['材料名称和示例样表主旨是否相符'] = ""
+        df['空白表格无示例'] = ""
+        df['示例样表包含填写示例'] = ""
+        df['示例样表信息是否打码'] = ""
+        
         # --- 2. 初始化浏览器 ---
         print("\n🌐 正在初始化浏览器...")
         
@@ -286,6 +401,9 @@ class BatchTestRunner:
             # --- 3. 批量执行测试 ---
             total_count = len(df)
             success_count = 0
+            
+            # 用于存储下载文件信息，以便进行配对校验
+            download_files = {}  # {material_name: {'空白表格': file_path, '示例样表': file_path}}
             
             for index, row in df.iterrows():
                 current_num = index + 1
@@ -299,19 +417,16 @@ class BatchTestRunner:
                 print(f"   材料: {material_name}")
                 print(f"   元素: {element_name}")
 
-                # if material_name != "往来港澳通行证":
-                #     continue
-
                 # 创建新页面
                 page = await context.new_page()
                 
                 try:
                     # 执行单个测试
-                    status, message, details, file_type = await self.test_single_download_link(
+                    status, message, file_path, file_type = await self.test_single_download_link(
                         page, url, material_name, element_name
                     )
                     
-                    # 记录结果
+                    # 记录基本结果
                     execution_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     df.at[index, '执行时间'] = execution_time
                     df.at[index, '执行结果'] = f"{status}: {message}"
@@ -320,8 +435,14 @@ class BatchTestRunner:
                     if status == "成功":
                         success_count += 1
                         print(f"✅ {message}")
-                        if details:
-                            print(f"   文件: {details}")
+                        if file_path:
+                            print(f"   文件: {file_path}")
+                            
+                            # 保存下载文件信息以便后续校验
+                            if material_name not in download_files:
+                                download_files[material_name] = {}
+                            download_files[material_name][element_name] = file_path
+                            
                         if file_type:
                             print(f"   格式: {file_type}")
                     else:
@@ -331,11 +452,18 @@ class BatchTestRunner:
                     execution_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     df.at[index, '执行时间'] = execution_time
                     df.at[index, '执行结果'] = f"失败: 未预期的错误 - {e}"
-                    df.at[index, '文件格式'] = ""  # 发生异常时文件格式为空
+                    df.at[index, '文件格式'] = ""
                     print(f"❌ 未预期的错误: {e}")
                 
                 finally:
                     await page.close()
+                    
+            # --- 4. 执行文档校验 ---
+            if self.document_validator and download_files:
+                print(f"\n{'='*60}")
+                print("📋 开始执行文档校验...")
+                
+                await self._perform_document_validation(df, download_files)
                     
             # --- 4. 保存结果 ---
             print(f"\n{'='*60}")
@@ -374,6 +502,8 @@ async def main():
     parser = argparse.ArgumentParser(description='批量测试下载链接功能')
     parser.add_argument('input_file', nargs='?', default='sample_test_data.xlsx', help='输入的Excel文件路径（默认: sample_test_data.xlsx）')
     parser.add_argument('-o', '--output', help='输出的Excel文件路径（可选）')
+    parser.add_argument('--openai-key', help='OpenAI API密钥（启用文档校验功能）')
+    parser.add_argument('--openai-base-url', help='OpenAI API基础URL（可选，用于代理服务）')
     
     args = parser.parse_args()
     
@@ -381,9 +511,22 @@ async def main():
     if not os.path.exists(args.input_file):
         print(f"❌ 输入文件不存在: {args.input_file}")
         return
+    
+    # 尝试从环境变量获取OpenAI配置
+    openai_api_key = args.openai_key or os.getenv('OPENAI_API_KEY')
+    openai_base_url = args.openai_base_url or os.getenv('OPENAI_BASE_URL')
+    
+    if not openai_api_key:
+        print("⚠️ 未设置OpenAI API密钥，文档校验功能将被禁用")
+        print("   可以通过 --openai-key 参数或 OPENAI_API_KEY 环境变量设置")
         
     # 创建并运行批量测试
-    runner = BatchTestRunner(args.input_file, args.output)
+    runner = BatchTestRunner(
+        input_file=args.input_file, 
+        output_file=args.output,
+        openai_api_key=openai_api_key,
+        openai_base_url=openai_base_url
+    )
     await runner.run_batch_tests()
 
 if __name__ == "__main__":
