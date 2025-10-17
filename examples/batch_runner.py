@@ -247,7 +247,8 @@ class BatchTestRunner:
                 file_type = file_extension.lower().lstrip('.') if file_extension else ""
                 
                 elapsed = datetime.now() - start_time
-                return ("成功", f"下载完成，耗时: {elapsed.total_seconds():.2f}秒", file_path, file_type)
+                # return ("成功", f"下载完成，耗时: {elapsed.total_seconds():.2f}秒", file_path, file_type)
+                return ("成功", f"下载完成", file_path, file_type)        
                 
             except Exception as e:
                 # 捕获所有下载相关的错误（包括超时）
